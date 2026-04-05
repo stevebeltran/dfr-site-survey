@@ -1,9 +1,21 @@
-html, body, #root {
-  margin: 0;
-  padding: 0;
-  min-height: 100%;
-}
+@media print {
+  button,
+  input,
+  textarea {
+    display: none !important;
+  }
 
-body {
-  font-family: Arial, sans-serif;
+  body {
+    margin: 0;
+    padding: 0;
+  }
+
+  img {
+    max-width: 100%;
+    page-break-inside: avoid;
+  }
+
+  .page-break {
+    page-break-before: always;
+  }
 }

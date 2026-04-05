@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "./supabase";
 
 const createLocation = (index) => ({
   id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
@@ -76,6 +77,16 @@ const secondaryButtonStyle = {
   color: "#0f172a",
 };
 
+const BRAND = {
+  logoUrl: "/brinc-logo.png",
+  accent: "#00D2FF",
+  bg: "#000000",
+  panel: "#111111",
+  border: "#333333",
+  text: "#ffffff",
+  muted: "#aaaaaa",
+};
+
 function Field({ label, value, onChange, textarea = false, placeholder = "" }) {
   return (
     <label style={{ display: "block" }}>
@@ -86,6 +97,69 @@ function Field({ label, value, onChange, textarea = false, placeholder = "" }) {
         <input value={value} onChange={onChange} placeholder={placeholder} style={inputStyle} />
       )}
     </label>
+  );
+}
+
+function ReportHeader({ survey, reportMode }) {
+  return (
+    <div
+      style={{
+        background: BRAND.bg,
+        color: BRAND.text,
+        borderRadius: 18,
+        overflow: "hidden",
+        border: `1px solid ${BRAND.border}`,
+        boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
+      }}
+    >
+      <div
+        style={{
+          height: 6,
+          background: `linear-gradient(90deg, ${BRAND.accent} 0%, #39FF14 100%)`,
+        }}
+      />
+      <div style={{ padding: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <div
+              style={{
+                width: 64,
+                height: 64,
+                borderRadius: 16,
+                background: BRAND.panel,
+                border: `1px solid ${BRAND.border}`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                overflow: "hidden",
+              }}
+            >
+              <img
+                src={BRAND.logoUrl}
+                alt="BRINC logo"
+                style={{ maxWidth: "80%", maxHeight: "80%", objectFit: "contain" }}
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            </div>
+            <div>
+              <div style={{ color: BRAND.accent, fontSize: 12, letterSpacing: 1.6, fontWeight: 800 }}>BRINC DFR</div>
+              <div style={{ fontSize: 28, fontWeight: 800, marginTop: 4 }}>Site Survey Report</div>
+              <div style={{ color: BRAND.muted, marginTop: 4 }}>
+                {reportMode === "internal" ? "Internal deployment planning version" : "Customer-facing site survey version"}
+              </div>
+            </div>
+          </div>
+          <div style={{ minWidth: 220 }}>
+            <div style={{ color: BRAND.muted, fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>Agency</div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>{survey.agency || "-"}</div>
+            <div style={{ marginTop: 10, color: BRAND.muted, fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>Survey Date</div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{survey.surveyDate || "-"}</div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -117,8 +191,65 @@ function TableSection({ title, rows }) {
 }
 
 export default function App() {
+  const fileInputRefs = useRef({});
+  const STORAGE_KEY = "dfr-site-survey-autosave-v1";
   const [tab, setTab] = useState("form");
-  const [survey, setSurvey] = useState({
+  const [reportMode, setReportMode] = useState("internal");
+  const [saveMessage, setSaveMessage] = useState("Not saved yet");
+  const [cloudStatus, setCloudStatus] = useState("Cloud not connected");
+  const [savedSurveys, setSavedSurveys] = useState([]);
+  const [currentSurveyId, setCurrentSurveyId] = useState(null);
+  const [survey, setSurvey] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch (error) {
+      console.error("Failed to load saved survey", error);
+    }
+
+    return {
+    agency: "",
+    surveyDate: "",
+    agencyAddress: "",
+    pointOfContact: "",
+    rtcc: "",
+    informationTechnology: "",
+    facilitiesEngineer: "",
+    radioShopEngineer: "",
+    craneContractor: "",
+    towerClimberContractor: "",
+    brincProjectManager: "Steven Beltran",
+    installationWeekOf: "",
+    followUpRequirements: "",
+    actionItems: "",
+    liveOpsLocation: "",
+    powerBackup: "",
+    dedicatedPilots: "",
+    cadSystem: "",
+    alprSystem: "",
+    radioSystem: "",
+    rtcSystem: "",
+    dems: "",
+    preferredCellularProvider: "",
+    gunshotDetection: "",
+    live911: "",
+    referenceLinks: "",
+    version: "V1.0",
+      locations: [createLocation(1)],
+    };
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(survey));
+      setSaveMessage(`Saved locally at ${new Date().toLocaleTimeString()}`);
+    } catch (error) {
+      console.error("Failed to save survey", error);
+      setSaveMessage("Local save failed");
+    }
+  }, [survey]);
+
+  const defaultSurvey = () => ({
     agency: "",
     surveyDate: "",
     agencyAddress: "",
@@ -148,6 +279,94 @@ export default function App() {
     version: "V1.0",
     locations: [createLocation(1)],
   });
+
+  const loadSurveyIntoForm = (surveyRecord) => {
+    setSurvey(surveyRecord.data);
+    setCurrentSurveyId(surveyRecord.id);
+    setSaveMessage(`Loaded ${surveyRecord.name}`);
+  };
+
+  const fetchSavedSurveys = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("site_surveys")
+        .select("id, name, agency, survey_date, updated_at, data")
+        .order("updated_at", { ascending: false });
+
+      if (error) throw error;
+      setSavedSurveys(data || []);
+      setCloudStatus("Cloud connected");
+    } catch (error) {
+      console.error("Failed to fetch surveys", error);
+      setCloudStatus("Cloud fetch failed");
+    }
+  };
+
+  useEffect(() => {
+    fetchSavedSurveys();
+  }, []);
+
+  const saveSurveyToCloud = async () => {
+    try {
+      setCloudStatus("Saving to cloud...");
+      const payload = {
+        name: `${survey.agency || "Untitled Survey"} - ${survey.surveyDate || new Date().toLocaleDateString()}`,
+        agency: survey.agency || "",
+        survey_date: survey.surveyDate || null,
+        data: survey,
+      };
+
+      if (currentSurveyId) {
+        const { error } = await supabase.from("site_surveys").update(payload).eq("id", currentSurveyId);
+        if (error) throw error;
+      } else {
+        const { data, error } = await supabase.from("site_surveys").insert(payload).select().single();
+        if (error) throw error;
+        setCurrentSurveyId(data.id);
+      }
+
+      await fetchSavedSurveys();
+      setCloudStatus(`Saved to cloud at ${new Date().toLocaleTimeString()}`);
+    } catch (error) {
+      console.error("Failed to save survey", error);
+      setCloudStatus("Cloud save failed");
+      window.alert("Cloud save failed. Check your Supabase setup.");
+    }
+  };
+
+  const createNewSurvey = () => {
+    setSurvey(defaultSurvey());
+    setCurrentSurveyId(null);
+    setSaveMessage("New survey started");
+  };
+
+  const deleteCloudSurvey = async (id) => {
+    const confirmed = window.confirm("Delete this survey from cloud storage?");
+    if (!confirmed) return;
+
+    try {
+      const { error } = await supabase.from("site_surveys").delete().eq("id", id);
+      if (error) throw error;
+      if (currentSurveyId === id) {
+        setCurrentSurveyId(null);
+      }
+      await fetchSavedSurveys();
+      setCloudStatus("Cloud survey deleted");
+    } catch (error) {
+      console.error("Failed to delete survey", error);
+      setCloudStatus("Cloud delete failed");
+    }
+  };
+
+  const clearSavedSurvey = () => {
+    const confirmed = window.confirm("Clear the saved survey from this device?");
+    if (!confirmed) return;
+
+    localStorage.removeItem(STORAGE_KEY);
+    setSurvey(defaultSurvey());
+    setCurrentSurveyId(null);
+    setSaveMessage("Saved survey cleared");
+  };
 
   const updateSurvey = (key, value) => {
     setSurvey((current) => ({ ...current, [key]: value }));
@@ -226,6 +445,52 @@ export default function App() {
     }));
   };
 
+  const fillGpsForLocation = (locationId, target) => {
+    if (!navigator.geolocation) {
+      window.alert("Geolocation is not supported on this device/browser.");
+      return;
+    }
+
+    setSaveMessage("Getting GPS location...");
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const coords = `${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)}`;
+        updateLocation(locationId, target, coords);
+        setSaveMessage(`GPS captured at ${new Date().toLocaleTimeString()}`);
+      },
+      () => {
+        window.alert("Unable to get GPS location. Make sure location permissions are enabled.");
+        setSaveMessage("GPS capture failed");
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
+  const triggerCameraUpload = (locationId) => {
+    const input = fileInputRefs.current[locationId];
+    if (input) input.click();
+  };
+
+  const handleCameraFiles = (locationId, files) => {
+    if (!files || !files.length) return;
+
+    const newPhotos = Array.from(files).map((file) => ({
+      id: `${Date.now()}-${Math.random()}`,
+      url: URL.createObjectURL(file),
+      caption: file.name,
+      fileName: file.name,
+    }));
+
+    setSurvey((current) => ({
+      ...current,
+      locations: current.locations.map((location) =>
+        location.id === locationId ? { ...location, photos: [...location.photos, ...newPhotos] } : location
+      ),
+    }));
+
+    setSaveMessage(`Added ${newPhotos.length} photo${newPhotos.length > 1 ? "s" : ""}`);
+  };
+
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(survey, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -274,6 +539,16 @@ export default function App() {
 
   return (
     <div style={{ background: "#f1f5f9", minHeight: "100vh", padding: 16, fontFamily: "Arial, sans-serif" }}>
+      <style>{`
+        @media print {
+          body { background: white !important; }
+          button, input, textarea { display: none !important; }
+          img { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+          .print-hide { display: none !important; }
+          .print-wrap { max-width: 100% !important; }
+          .print-card { break-inside: avoid; page-break-inside: avoid; }
+        }
+      `}</style>
       <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gap: 16 }}>
         <div style={{ ...sectionStyle, padding: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
@@ -287,20 +562,49 @@ export default function App() {
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <button onClick={() => setTab("form")} style={tab === "form" ? buttonStyle : secondaryButtonStyle}>Form</button>
               <button onClick={() => setTab("preview")} style={tab === "preview" ? buttonStyle : secondaryButtonStyle}>Preview</button>
+              <button onClick={() => setReportMode(reportMode === "internal" ? "customer" : "internal")} style={secondaryButtonStyle}>{reportMode === "internal" ? "Internal View" : "Customer View"}</button>
               <button onClick={exportJson} style={secondaryButtonStyle}>Export JSON</button>
+              <button onClick={saveSurveyToCloud} style={buttonStyle}>Save to Cloud</button>
+              <button onClick={createNewSurvey} style={secondaryButtonStyle}>New Survey</button>
+              <button onClick={clearSavedSurvey} style={secondaryButtonStyle}>Clear Saved</button>
               <button onClick={() => window.print()} style={buttonStyle}>Print / Save PDF</button>
             </div>
           </div>
 
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 16 }}>
+            <div style={{ background: "#f0fdf4", color: "#166534", padding: "8px 12px", borderRadius: 999 }}>{saveMessage}</div>
+            <div style={{ background: "#eff6ff", color: "#1d4ed8", padding: "8px 12px", borderRadius: 999 }}>{cloudStatus}</div>
             <div style={{ background: "#eff6ff", color: "#1d4ed8", padding: "8px 12px", borderRadius: 999 }}>Sites: {stats.siteCount}</div>
             <div style={{ background: "#ecfeff", color: "#0f766e", padding: "8px 12px", borderRadius: 999 }}>Photos: {stats.photoCount}</div>
+            <div style={{ background: reportMode === "internal" ? "#ede9fe" : "#fff7ed", color: reportMode === "internal" ? "#6d28d9" : "#c2410c", padding: "8px 12px", borderRadius: 999 }}>{reportMode === "internal" ? "Internal Report" : "Customer Report"}</div>
             <div style={{ background: "#f8fafc", color: "#334155", padding: "8px 12px", borderRadius: 999 }}>Version: {survey.version}</div>
           </div>
         </div>
 
         {tab === "form" ? (
           <>
+            <div style={sectionStyle}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <h2 style={{ margin: 0 }}>Cloud Surveys</h2>
+                <div style={{ color: "#64748b", fontSize: 14 }}>{currentSurveyId ? `Editing survey ID: ${currentSurveyId}` : "New unsaved survey"}</div>
+              </div>
+              <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+                {!savedSurveys.length && <div style={{ color: "#64748b" }}>No cloud surveys loaded yet.</div>}
+                {savedSurveys.map((item) => (
+                  <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, border: "1px solid #e2e8f0", borderRadius: 12, padding: 12, background: "#fff" }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{item.name}</div>
+                      <div style={{ color: "#64748b", fontSize: 13 }}>{item.agency || "No agency"} • {item.updated_at ? new Date(item.updated_at).toLocaleString() : "No date"}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button onClick={() => loadSurveyIntoForm(item)} style={secondaryButtonStyle}>Load</button>
+                      <button onClick={() => deleteCloudSurvey(item.id)} style={secondaryButtonStyle}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          
             <div style={sectionStyle}>
               <h2 style={{ marginTop: 0 }}>General Project Info</h2>
               <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
@@ -312,12 +616,12 @@ export default function App() {
                 <Field label="Information Technology" value={survey.informationTechnology} onChange={(e) => updateSurvey("informationTechnology", e.target.value)} textarea />
                 <Field label="Facilities Engineer" value={survey.facilitiesEngineer} onChange={(e) => updateSurvey("facilitiesEngineer", e.target.value)} textarea />
                 <Field label="Radio Shop Engineer" value={survey.radioShopEngineer} onChange={(e) => updateSurvey("radioShopEngineer", e.target.value)} textarea />
-                <Field label="Crane Contractor" value={survey.craneContractor} onChange={(e) => updateSurvey("craneContractor", e.target.value)} />
-                <Field label="Tower Climber Contractor" value={survey.towerClimberContractor} onChange={(e) => updateSurvey("towerClimberContractor", e.target.value)} />
-                <Field label="BRINC Project Manager" value={survey.brincProjectManager} onChange={(e) => updateSurvey("brincProjectManager", e.target.value)} />
+                {reportMode === "internal" && <Field label="Crane Contractor" value={survey.craneContractor} onChange={(e) => updateSurvey("craneContractor", e.target.value)} />}
+                {reportMode === "internal" && <Field label="Tower Climber Contractor" value={survey.towerClimberContractor} onChange={(e) => updateSurvey("towerClimberContractor", e.target.value)} />}
+                {reportMode === "internal" && <Field label="BRINC Project Manager" value={survey.brincProjectManager} onChange={(e) => updateSurvey("brincProjectManager", e.target.value)} />}
                 <Field label="Installation Week Of" value={survey.installationWeekOf} onChange={(e) => updateSurvey("installationWeekOf", e.target.value)} />
                 <Field label="Follow Up Requirements" value={survey.followUpRequirements} onChange={(e) => updateSurvey("followUpRequirements", e.target.value)} textarea />
-                <Field label="Action Items" value={survey.actionItems} onChange={(e) => updateSurvey("actionItems", e.target.value)} textarea />
+                {reportMode === "internal" && <Field label="Action Items" value={survey.actionItems} onChange={(e) => updateSurvey("actionItems", e.target.value)} textarea />}
               </div>
             </div>
 
@@ -339,6 +643,22 @@ export default function App() {
                     </div>
 
                     <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", marginTop: 16 }}>
+                      <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button onClick={() => fillGpsForLocation(location.id, "stationLatLong")} style={secondaryButtonStyle}>Use GPS for Station</button>
+                        <button onClick={() => fillGpsForLocation(location.id, "rfLatLong")} style={secondaryButtonStyle}>Use GPS for RF</button>
+                        <button onClick={() => triggerCameraUpload(location.id)} style={secondaryButtonStyle}>Take / Add Photos</button>
+                        <input
+                          ref={(element) => {
+                            fileInputRefs.current[location.id] = element;
+                          }}
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          multiple
+                          style={{ display: "none" }}
+                          onChange={(event) => handleCameraFiles(location.id, event.target.files)}
+                        />
+                      </div>
                       <Field label="Site Name" value={location.siteName} onChange={(e) => updateLocation(location.id, "siteName", e.target.value)} />
                       <Field label="Site Address" value={location.siteAddress} onChange={(e) => updateLocation(location.id, "siteAddress", e.target.value)} />
                       <Field label="Height of Building" value={location.height} onChange={(e) => updateLocation(location.id, "height", e.target.value)} />
@@ -365,17 +685,17 @@ export default function App() {
                       <Field label="120V / 15A Power" value={location.rfPower} onChange={(e) => updateLocation(location.id, "rfPower", e.target.value)} textarea />
                       <Field label="RF Internet / Ethernet" value={location.rfInternet} onChange={(e) => updateLocation(location.id, "rfInternet", e.target.value)} textarea />
                       <Field label="Other RF at Same Location" value={location.otherRf} onChange={(e) => updateLocation(location.id, "otherRf", e.target.value)} />
-                      <Field label="Building Permitting Required" value={location.permitting} onChange={(e) => updateLocation(location.id, "permitting", e.target.value)} textarea />
-                      <Field label="Tower Climber Required" value={location.towerClimber} onChange={(e) => updateLocation(location.id, "towerClimber", e.target.value)} />
-                      <Field label="Crane Required" value={location.craneRequired} onChange={(e) => updateLocation(location.id, "craneRequired", e.target.value)} />
-                      <Field label="Crane Staging Area" value={location.craneStaging} onChange={(e) => updateLocation(location.id, "craneStaging", e.target.value)} textarea />
-                      <Field label="Location Notes" value={location.notes} onChange={(e) => updateLocation(location.id, "notes", e.target.value)} textarea />
+                      {reportMode === "internal" && <Field label="Building Permitting Required" value={location.permitting} onChange={(e) => updateLocation(location.id, "permitting", e.target.value)} textarea />}
+                      {reportMode === "internal" && <Field label="Tower Climber Required" value={location.towerClimber} onChange={(e) => updateLocation(location.id, "towerClimber", e.target.value)} />}
+                      {reportMode === "internal" && <Field label="Crane Required" value={location.craneRequired} onChange={(e) => updateLocation(location.id, "craneRequired", e.target.value)} />}
+                      {reportMode === "internal" && <Field label="Crane Staging Area" value={location.craneStaging} onChange={(e) => updateLocation(location.id, "craneStaging", e.target.value)} textarea />}
+                      {reportMode === "internal" && <Field label="Location Notes" value={location.notes} onChange={(e) => updateLocation(location.id, "notes", e.target.value)} textarea />}
                     </div>
 
                     <div style={{ marginTop: 16 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
                         <div style={{ fontSize: 16, fontWeight: 700 }}>Supporting Photos</div>
-                        <button onClick={() => addPhoto(location.id)} style={secondaryButtonStyle}>Add Photo</button>
+                        <button onClick={() => addPhoto(location.id)} style={secondaryButtonStyle}>Add Photo URL</button>
                       </div>
 
                       <div style={{ display: "grid", gap: 12 }}>
@@ -423,21 +743,35 @@ export default function App() {
           </>
         ) : (
           <div style={{ display: "grid", gap: 16 }}>
-            <div style={{ ...sectionStyle, background: "#fffbeb", borderColor: "#fcd34d" }}>
-              This preview is your report view. Use Print / Save PDF to make a customer-ready PDF. Later we can split this into a customer version and a BRINC internal version.
+            <ReportHeader survey={survey} reportMode={reportMode} />
+
+            <div className="print-hide" style={{ ...sectionStyle, background: reportMode === "internal" ? "#f5f3ff" : "#fffbeb", borderColor: reportMode === "internal" ? "#c4b5fd" : "#fcd34d" }}>
+              {reportMode === "internal"
+                ? "Internal preview: includes BRINC-only planning fields like action items, contractors, crane details, and notes."
+                : "Customer preview: hides BRINC-only planning details and shows the cleaner external report version."}
             </div>
 
-            <div style={sectionStyle}>
-              <h1 style={{ marginTop: 0, marginBottom: 6 }}>DFR Site Survey</h1>
-              <div style={{ color: "#475569" }}>
-                <strong>Agency:</strong> {survey.agency || "-"} &nbsp; | &nbsp; <strong>Date:</strong> {survey.surveyDate || "-"}
+            <div className="print-card" style={{ ...sectionStyle, borderLeft: `6px solid ${BRAND.accent}` }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>
+                <div>
+                  <div style={{ color: "#64748b", fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>Report Type</div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>{reportMode === "internal" ? "Internal" : "Customer"}</div>
+                </div>
+                <div>
+                  <div style={{ color: "#64748b", fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>Version</div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>{survey.version || "-"}</div>
+                </div>
+                <div>
+                  <div style={{ color: "#64748b", fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>Prepared For</div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>{survey.agency || "-"}</div>
+                </div>
               </div>
             </div>
 
-            <TableSection title="General" rows={generalRows} />
+            <TableSection title="General" rows={generalRows.filter(([label]) => reportMode === "internal" || !["Crane Contractor", "Tower Climber Contractor", "BRINC Project Manager", "Action Items"].includes(label))} />
 
             {survey.locations.map((location) => (
-              <div key={location.id} style={{ display: "grid", gap: 12 }}>
+              <div key={location.id} className="print-card" style={{ display: "grid", gap: 12 }}>
                 <div style={sectionStyle}>
                   <h2 style={{ marginTop: 0, marginBottom: 6 }}>{location.label}</h2>
                   <div style={{ color: "#475569" }}>{location.siteAddress || location.siteName || "Unnamed Site"}</div>
@@ -493,7 +827,7 @@ export default function App() {
                   ]}
                 />
 
-                <TableSection
+                {reportMode === "internal" && <TableSection
                   title="Permitting, Climbers & Crane"
                   rows={[
                     ["Building Permitting Required", location.permitting],
@@ -501,9 +835,9 @@ export default function App() {
                     ["Crane Required", location.craneRequired],
                     ["Crane Staging Area", location.craneStaging],
                   ]}
-                />
+                />}
 
-                {!!location.notes && (
+                {reportMode === "internal" && !!location.notes && (
                   <div style={sectionStyle}>
                     <div style={{ fontWeight: 700, marginBottom: 8 }}>Location Notes</div>
                     <div style={{ whiteSpace: "pre-wrap" }}>{location.notes}</div>
@@ -538,7 +872,20 @@ export default function App() {
 
             <TableSection title="LiveOps Flight Center" rows={liveOpsRows} />
 
-            <div style={sectionStyle}>
+            <div className="print-card" style={{ ...sectionStyle, background: "#0f172a", color: "white" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 18 }}>BRINC Drones</div>
+                  <div style={{ color: "#93c5fd", marginTop: 4 }}>First responder drone site survey</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ color: "#93c5fd", fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>Document Version</div>
+                  <div style={{ fontWeight: 700 }}>{survey.version || "-"}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="print-card" style={sectionStyle}>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Reference Links</div>
               <div style={{ whiteSpace: "pre-wrap" }}>{survey.referenceLinks || "-"}</div>
               <div style={{ marginTop: 12, color: "#64748b", fontSize: 13 }}>Version {survey.version || "-"}</div>
